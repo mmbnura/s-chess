@@ -47,6 +47,13 @@ UNICODE_PIECES = {
     "q": "♛",
     "k": "♚",
 }
+BOARD_COLORS = {
+    "square light": "#EEEED2",
+    "square dark": "#769656",
+    "coord": "#769656",
+    "inner border": "#4b5f3d",
+    "outer border": "#4b5f3d",
+}
 
 # Piece-square tables (white perspective)
 PAWN_TABLE = [
@@ -191,6 +198,62 @@ def init_state() -> None:
 def bootstrap_local_storage() -> None:
     if st.session_state.storage_bootstrapped:
         return
+    payload = json.dumps(history).replace("\\", "\\\\").replace("'", "\\'")
+    streamlit_js_eval(
+        js_expressions=f"localStorage.setItem('{HISTORY_KEY}', '{payload}')",
+        key=f"save_history_local_storage_{len(history)}",
+        want_output=False,
+    )
+
+
+def square_label(square: chess.Square) -> str:
+    piece = st.session_state.board.piece_at(square)
+    symbol = PIECE_SYMBOLS.get(piece.symbol(), "") if piece else "·"
+    return f"{symbol} {chess.square_name(square)}"
+
+
+def render_animated_svg_board(board: chess.Board, flipped: bool, key_suffix: str) -> None:
+    lastmove = board.move_stack[-1] if board.move_stack else None
+    svg = chess.svg.board(
+        board,
+        size=560,
+        flipped=flipped,
+        lastmove=lastmove,
+        check=board.king(board.turn) if board.is_check() else None,
+        coordinates=True,
+        colors=BOARD_COLORS,
+    )
+    components.html(
+        f"""
+        <style>
+          .chess-wrap svg {{
+            width: 100%;
+            height: auto;
+            animation: fadeIn 240ms ease-out;
+          }}
+          @keyframes fadeIn {{
+            from {{ opacity: 0.65; transform: scale(0.985); }}
+            to {{ opacity: 1; transform: scale(1); }}
+          }}
+        </style>
+        <div class="chess-wrap">{svg}</div>
+        """,
+        height=590,
+        key=f"svg_board_{key_suffix}_{len(board.move_stack)}",
+    )
+
+
+def square_is_user_piece(square: chess.Square) -> bool:
+    piece = st.session_state.board.piece_at(square)
+    return piece is not None and piece.color == st.session_state.user_color
+
+
+def legal_targets(from_square: chess.Square) -> set[chess.Square]:
+    targets: set[chess.Square] = set()
+    for move in st.session_state.board.legal_moves:
+        if move.from_square == from_square:
+            targets.add(move.to_square)
+    return targets
 
     if "ls_games" in st.query_params and not st.session_state.history_loaded:
         try:
@@ -496,15 +559,60 @@ def result_emoji(res: str) -> str:
     return "🤝"
 
 
-def render_gameplay() -> None:
-    st.subheader("Tournament Hall")
-    with st.container(border=True):
-        setup_cols = st.columns([1, 1, 1])
-        side = setup_cols[0].radio("Your side", ["White", "Black"], horizontal=True)
-        difficulty = setup_cols[1].selectbox("Difficulty", list(DIFFICULTIES.keys()), index=list(DIFFICULTIES.keys()).index(st.session_state.difficulty))
-        if setup_cols[2].button("Start New Game", use_container_width=True):
-            start_new_game(side, difficulty)
-            run_engine_turn_if_needed()
+def move_list_from_board(board: chess.Board) -> list[str]:
+    replay = chess.Board()
+    pgn_moves: list[str] = []
+    for idx, move in enumerate(board.move_stack):
+        if replay.turn == chess.WHITE:
+            pgn_moves.append(f"{(idx // 2) + 1}.")
+        pgn_moves.append(replay.san(move))
+        replay.push(move)
+    return pgn_moves
+
+
+def render_click_board(board: chess.Board) -> None:
+    render_animated_svg_board(
+        board,
+        flipped=(st.session_state.user_color == chess.BLACK),
+        key_suffix="play",
+    )
+    st.caption("Click a piece from the grid below, then click its destination.")
+
+    selected = st.session_state.selected_square
+    targets = legal_targets(selected) if selected is not None else set()
+
+    ranks = range(7, -1, -1) if st.session_state.user_color == chess.WHITE else range(8)
+    files = range(8) if st.session_state.user_color == chess.WHITE else range(7, -1, -1)
+
+    for rank in ranks:
+        cols = st.columns(8, gap="small")
+        for file_idx, file in enumerate(files):
+            square = chess.square(file, rank)
+            marker = ""
+            if square == selected:
+                marker = "🟨"
+            elif square in targets:
+                marker = "🟩"
+
+            with cols[file_idx]:
+                if st.button(
+                    f"{marker}{square_label(square)}",
+                    key=f"sq_{square}_{len(board.move_stack)}",
+                    use_container_width=True,
+                ):
+                    handle_square_click(square)
+                    run_engine_turn_if_needed()
+                    st.rerun()
+
+
+def render_play_page() -> None:
+    st.header("Play vs Engine")
+    side = st.radio("Your side", ["White", "Black"], horizontal=True)
+    difficulty = st.select_slider("Difficulty", options=list(DIFFICULTIES.keys()), value="Medium")
+
+    if st.button("Start New Game", type="primary"):
+        start_new_game(side, difficulty)
+        run_engine_turn_if_needed()
 
     if not st.session_state.game_in_progress:
         st.info("♟ Start a game to begin.")
@@ -678,23 +786,15 @@ def render_review() -> None:
         idx = min(st.session_state.review_ply, len(evals) - 1)
         render_board_svg(board, data.get("user_color") == "Black", None, set(), float(evals[idx]))
 
-    with right:
-        st.markdown(f"**Result:** {data['result']}")
-        st.markdown(f"**Difficulty:** {data['difficulty']}")
-        st.markdown(f"**Duration:** {format_duration(data.get('duration_s', 0))}")
-
-        evals = [max(-5.0, min(5.0, float(e))) for e in data.get("evals", [0.0])]
-        df = pd.DataFrame({"move": list(range(len(evals))), "eval": evals})
-        base = alt.Chart(df)
-        area = base.mark_area(color="rgba(226,176,74,0.25)", line={"color": "#e2b04a"}).encode(
-            x=alt.X("move:Q", title="Move"),
-            y=alt.Y("eval:Q", title="Eval", scale=alt.Scale(domain=[-5, 5])),
-        )
-        marker_df = pd.DataFrame({"x": [min(st.session_state.review_ply, len(evals)-1)]})
-        marker = alt.Chart(marker_df).mark_rule(color="#e8e8e8").encode(x="x:Q")
-        st.altair_chart((area + marker).properties(height=140), use_container_width=True)
-
-        st.code(data["pgn"], language="pgn")
+    cols = st.columns([2, 1])
+    with cols[0]:
+        user_color = chess.WHITE if game_data["user_color"] == "White" else chess.BLACK
+        render_animated_svg_board(board, flipped=(user_color == chess.BLACK), key_suffix="review")
+    with cols[1]:
+        st.subheader("Review Notes")
+        st.write(f"Result: **{game_data['result']}**")
+        st.write(f"Difficulty: **{game_data['difficulty']}**")
+        st.code(" ".join(san_history) or "Start position")
 
 
 def main() -> None:
