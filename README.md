@@ -4,8 +4,9 @@ A personal-use online chess app built with Python + Streamlit.
 
 ## Features
 
-- Play against a server-side chess engine (Stockfish via `python-chess` UCI integration).
+- Play against a server-side chess engine implemented in Python using `python-chess`.
 - Choose your side (White/Black) and difficulty (Easy/Medium/Hard) before starting.
+- Click-to-move board controls using your mouse (select piece, then destination).
 - Persist game history in browser local storage.
 - Review completed games immediately after play.
 - Open and review any previous game from the history page.
@@ -19,6 +20,5 @@ streamlit run app.py
 
 ## Streamlit Community Cloud notes
 
-- This app runs engine analysis on the server process, not in the browser.
-- By default the app expects a `stockfish` binary on `PATH`.
-- If needed, set a custom engine path in the sidebar.
+- Engine analysis runs on the server process, not in the browser.
+- No external Stockfish binary is required.
